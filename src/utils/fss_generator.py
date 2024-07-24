@@ -17,7 +17,7 @@ import typing
 import numpy as np
 import numpy.typing
 
-from dwave.optimization.mathematical import add, maximum 
+from dwave.optimization.mathematical import add, maximum, minimum
 from dwave.optimization.model import Model
 from dwave.system import LeapHybridNLSampler
 
@@ -205,12 +205,59 @@ def flow_shop_scheduling(processing_times: numpy.typing.ArrayLike
     return model, end_times
 
 
+class Job:
+    """Job with a list of processing times for each machine, in the
+    form {machine: processing_time}.
+    """
+    def __init__(self, processing_times: dict[int]):
+        self.processing_times = processing_times
+
+    def __repr__(self):
+        return f"Job with processing times: {self.processing_times}"
+
+    def __str__(self):
+        return f"Job with processing times: {self.processing_times}"
+    
+
+class Machine:
+    """A machine object to execute jobs."""
+    def __init__(self, id_: str):
+        self.id = id_
+
+    def __repr__(self):
+        return f"Machine: {self.id}"
+
+    def __str__(self):
+        return f"Machine: {self.id}"
+    
+
+class CooldownPeriod:
+    """A cooldown period associated with a specific Machine."""
+    def __init__(self, machine: Machine, durations: dict[Job, int]):
+        """Initialize a cooldown period for a machine.
+
+        Args:
+            machine (Machine): The machine to which the cooldown period
+                applies.
+            durations (dict[Job, int]): A dictionary of jobs and their
+                associated cooldown durations, in the form {job: duration}.
+        """
+        self.machine = machine
+        self.durations = durations
+
+    def __repr__(self):
+        return f"Cooldown period: {self.duration}"
+
+    def __str__(self):
+        return f"Cooldown period: {self.duration}"
+
+
 class FlowShopScheduler:
     '''
     This class is used to generate a model encoding a flow-shop scheduling problem.
     '''
 
-    def __init__(self, processing_times: numpy.typing.ArrayLike):
+    def __init__(self, processing_times: numpy.typing.ArrayLike, cooldown_times: numpy.typing.ArrayLike=None):
         """Initialize a flow-shop scheduler with the given processing
 
         Args:
@@ -224,6 +271,7 @@ class FlowShopScheduler:
         if len(processing_times) == 0:
             raise ValueError("`processing_times` must not be empty")
         self.processing_times = processing_times
+        self.cooldown_times = cooldown_times
 
 
     def build_model(self):
@@ -243,45 +291,64 @@ class FlowShopScheduler:
         
         # Add the constant processing-times matrix
         times = self.model.constant(processing_times)
+        self.cooldown_times = self.model.constant(self.cooldown_times)
         
         # The decision symbol is a num_jobs-long array of integer variables
-        order = self.model.list(num_jobs)
+        # orders = [self.model.list(num_jobs) for x in range(2)]
+        self.order1 = self.model.list(num_jobs)
+        self.order2 = self.model.list(num_jobs)
+        self.order1_ends = self.model.integer(shape=num_jobs, lower_bound=0, upper_bound=100)
 
+        self.machines = [[0], [1]]
         self.end_times = []
-        for machine_m in self.machines:
+        for order_idx, order in enumerate([self.order1, self.order2]):
+            for machine_idx, machine_m in enumerate(self.machines[order_idx]):
 
-            machine_m_times = []
-            if machine_m == 0:
+                machine_m_times = []
+                # cooldown_end_times = []
+                if order_idx == 0:
 
-                for job_j in self.jobs:
-                
-                    if job_j == 0:
-                        machine_m_times.append(times[machine_m, :][order[job_j]])
-                    else:
-                        end_job_j = times[machine_m, :][order[job_j]]
-                        end_job_j += machine_m_times[-1]
-                        machine_m_times.append(end_job_j)
+                    for job_j in self.jobs:
+                    
+                        if job_j == 0:
+                            machine_m_times.append(times[machine_m, :][order[job_j]])
+                            # cooldown_end_times.append(times[machine_m, :][order[job_j]] + self.model.constant(self.cooldown_times[job_j]))
+                        else:
+                            end_job_j = times[machine_m][order[job_j]]
+                            end_job_j += machine_m_times[-1]
+                            machine_m_times.append(end_job_j)
+                            # cooldown_end_times.append(end_job_j + self.model.constant(self.cooldown_times[job_j]))
+                        self.model.add_constraint(self.order1_ends[order[job_j]] == machine_m_times[-1] + self.cooldown_times[order[job_j]])
+                        
+                else:
 
-            else:
+                    for job_j in self.jobs: #we'll go in order of self.order2
+                        if job_j == 0:
+                            end_job_j = self.order1_ends[order[job_j]]
+                            end_job_j += times[machine_m][order[job_j]]
+                            machine_m_times.append(end_job_j)
+                        else:
+                            end_job_j = maximum(self.order1_ends[order[job_j]],
+                                                 machine_m_times[-1],
+                                                 )
+                            end_job_j += times[machine_m][order[job_j]]
+                            machine_m_times.append(end_job_j)
 
-                for job_j in self.jobs:
-                
-                    if job_j == 0:
-                        end_job_j = self.end_times[machine_m - 1][job_j]
-                        end_job_j += times[machine_m, :][order[job_j]]
-                        machine_m_times.append(end_job_j)
-                    else:
-                        end_job_j = maximum(self.end_times[machine_m - 1][job_j], machine_m_times[-1])
-                        end_job_j += times[machine_m, :][order[job_j]]
-                        machine_m_times.append(end_job_j)
+                self.end_times.append(machine_m_times)
 
-            self.end_times.append(machine_m_times)
-        makespan = self.end_times[-1][-1]
-        
+        makespan = maximum(self.end_times[-1])
+
+        # makespan = self.end_times[-1][-1]
+
         # The objective is to minimize the last end time
         self.model.minimize(makespan)
 
+        self.model.states.resize(1)
+        self.order1.set_state(0, [2,1,0])
+        self.order2.set_state(0, [0,1,2])
+        self.order1_ends.set_state(0, [31,34,6])
         self.model.lock()
+        self.model.objective.state()
 
 
     def _calculate_end_times(self) -> list[list[int]]:
@@ -298,8 +365,10 @@ class FlowShopScheduler:
         """
         times = self.processing_times
 
-        self.job_order = [x for x in next(self.model.iter_decisions()).state(0).astype(int)]
+        self.job_order = [y for y in [x.state() for x in self.model.iter_decisions()]]
 
+        import pdb
+        pdb.set_trace()
         self.end_times = []
         for machine_m, _ in enumerate(times):
 
@@ -329,6 +398,9 @@ class FlowShopScheduler:
                         machine_m_times.append(end_job_j)
 
             self.end_times.append(machine_m_times)
+    
+        import pdb
+        pdb.set_trace()
 
 
     def solve(self, time_limit: int=None, sampler_kwargs: dict={}) -> None:
@@ -359,6 +431,8 @@ class FlowShopScheduler:
     
 
 if __name__ == '__main__':
-    fss = FlowShopScheduler(processing_times=[[10, 5, 7], [20, 10, 15]])
+    # fss = FlowShopScheduler(processing_times=[[10, 5, 7], [20, 10, 15]])
+    # fss = FlowShopScheduler(processing_times=[[1, 2], [1, 2]], cooldown_times=[5,0])
+    fss = FlowShopScheduler(processing_times=[[1,4,1], [5, 5, 4]], cooldown_times=[5,30,30])
     fss.build_model()
     fss.solve(sampler_kwargs={'profile': 'defaults'})
