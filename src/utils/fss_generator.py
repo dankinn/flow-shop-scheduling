@@ -151,8 +151,6 @@ def flow_shop_scheduling(processing_times: numpy.typing.ArrayLike
         >>> model, end_times = flow_shop_scheduling(processing_times=processing_times)
 
     """
-    import pdb
-    pdb.set_trace()
     processing_times = next(_2d_nonnegative_int_array(processing_times=processing_times))
     if not processing_times.size:
         raise ValueError("`processing_times` must not be empty")
