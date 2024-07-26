@@ -4,7 +4,7 @@ import os
 from collections import defaultdict
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, Iterator
 
 import numpy as np
 from dimod import BINARY, INTEGER, ConstrainedQuadraticModel, sym
@@ -263,3 +263,25 @@ def load_or_library_instances(instance_path: Union[Path, str]) -> list[dict]:
                 processing_times.append(times)
 
         return instances
+
+
+def _2d_nonnegative_int_array(**kwargs: np.typing.ArrayLike) -> Iterator[np.ndarray]:
+    """Coerce all given array-likes to 2d NumPy arrays of non-negative integers and
+    raise a consistent error message if it cannot be cast.
+
+    Keyword argument names must match the argument names of the calling function
+    for the error message to make sense.
+    """
+    for argname, array in kwargs.items():
+        try:
+            array = np.atleast_2d(np.asarray(array, dtype=int))
+        except (ValueError, TypeError):
+            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
+        
+        if not np.issubdtype(array.dtype, np.number):
+            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
+
+        if array.ndim != 2 or (array < 0).any():
+            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
+
+        yield array

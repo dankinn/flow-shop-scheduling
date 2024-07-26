@@ -13,38 +13,15 @@
 #    limitations under the License.
 import sys
 sys.path.append("./src")
-import typing
 
 import numpy as np
-import numpy.typing
 
 from dwave.optimization.mathematical import maximum
 from dwave.optimization.model import Model
 from dwave.system import LeapHybridNLSampler
 
 from model_data import JobShopData
-
-
-def _2d_nonnegative_int_array(**kwargs: numpy.typing.ArrayLike) -> typing.Iterator[np.ndarray]:
-    """Coerce all given array-likes to 2d NumPy arrays of non-negative integers and
-    raise a consistent error message if it cannot be cast.
-
-    Keyword argument names must match the argument names of the calling function
-    for the error message to make sense.
-    """
-    for argname, array in kwargs.items():
-        try:
-            array = np.atleast_2d(np.asarray(array, dtype=int))
-        except (ValueError, TypeError):
-            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
-        
-        if not np.issubdtype(array.dtype, np.number):
-            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
-
-        if array.ndim != 2 or (array < 0).any():
-            raise ValueError(f"`{argname}` must be a 2d array-like of non-negative integers")
-
-        yield array
+from utils.utils import _2d_nonnegative_int_array
 
 
 class Job:
@@ -467,7 +444,6 @@ if __name__ == '__main__':
     # random_fss = create_random_fss(4, 3, 2, 10, 10, seed=0)
     # random_fss.build_model()
     # random_fss.solve(sampler_kwargs={'profile': 'defaults'})
-
 
     input_file = 'input/tai20_5.txt'
     file_fss = create_fss_from_file(input_file)
