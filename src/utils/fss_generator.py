@@ -147,7 +147,10 @@ class FlowShopScheduler:
     This class is used to generate a model encoding a flow-shop scheduling problem.
     '''
 
-    def __init__(self, machines: list[Machine], jobs: list[Job], cooldown_periods: list[CooldownPeriod]=[]):
+    def __init__(self,
+                 machines: list[Machine],
+                 jobs: list[Job], 
+                 cooldown_periods: list[CooldownPeriod]=[]):
         """Initialize a flow-shop scheduler.
 
         Args:
@@ -180,6 +183,32 @@ class FlowShopScheduler:
         self.ordering_groups.append(machines[last_idx:])
 
 
+    def generate_integer_bounds(self):
+        """Generate integer bounds for the flow-shop scheduling problem.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: A tuple of 2D arrays representing the integer
+                bounds for the flow-shop scheduling problem.
+        """
+        ordering_group_bounds = [[None, None] for _ in range(len(self.ordering_groups)-1)]
+        min_time = 0
+        total_time = 0
+        for idx, ordering_group in enumerate(self.ordering_groups[:-1]):
+            ordering_group_bounds[idx][0] = min_time
+            min_time_nominee = float('inf')
+            for job in self.jobs:
+                job_time = 0
+                for machine in ordering_group:
+                    job_time += job.processing_times[machine]
+                job_time += self.cooldown_periods[idx].durations[job]
+                total_time += job_time
+                if job_time < min_time_nominee:
+                    min_time_nominee = job_time
+            min_time += min_time_nominee
+            ordering_group_bounds[idx][1] = total_time
+        return ordering_group_bounds
+
+
     def build_model(self):
         """Build the flow-shop scheduling model.
 
@@ -199,8 +228,9 @@ class FlowShopScheduler:
 
         num_jobs = len(self.jobs)
         self.orders = [self.model.list(num_jobs) for _ in range(len(self.ordering_groups))]
-        self.order_group_ends = [self.model.integer(shape=num_jobs, lower_bound=0, upper_bound=1000) \
-                                 for _ in range(len(self.ordering_groups)-1)]
+        ordering_group_bounds = self.generate_integer_bounds()
+        self.order_group_ends = [self.model.integer(shape=num_jobs, lower_bound=lb, upper_bound=ub) \
+                                 for [lb, ub] in ordering_group_bounds]
 
         self.end_times = []
         for order_idx, machines in enumerate(self.ordering_groups):
@@ -211,7 +241,7 @@ class FlowShopScheduler:
                 machine_m_times = []
                 if order_idx == 0:
                     for job_j in range(len(self.jobs)): #we'll iterate through the order of the first grouping
-                        if machine_m == 0:
+                        if machine_idx == 0:
                             if job_j == 0: #if a job is the first in order, then it'll start at time 0 and end at the processing time
                                 machine_m_times.append(times[machine_m, :][order[job_j]])
                             else: # otherwise, the job will start at the prior job's end time
@@ -229,14 +259,14 @@ class FlowShopScheduler:
                                 machine_m_times.append(end_job_j)
                         
                 
-                        if (machine_idx == len(machines) - 1) and (len(self.ordering_groups) > 1): #if there are cooldown periods, we'll add the cooldown time
+                        if (machine_idx == len(machines) - 1) and (len(self.ordering_groups) > 1): 
+                            #if there are cooldown periods, we'll add the cooldown time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
                                                     machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
                     
                 else:
-
                     for job_j in range(len(self.jobs)): #iterate through this groups ordering
-                        if machine_m == 0:
+                        if machine_idx == 0:
                             if job_j == 0:
                                 end_job_j = self.order_group_ends[order_idx-1][order[job_j]]
                                 end_job_j += times[machine_m][order[job_j]]
@@ -249,7 +279,7 @@ class FlowShopScheduler:
                                 machine_m_times.append(end_job_j)
                         else:
                             if job_j == 0:
-                                end_job_j = self.order_end_times[-1][job_j]
+                                end_job_j = order_end_times[-1][job_j]
                                 end_job_j += times[machine_m][order[job_j]]
                                 machine_m_times.append(end_job_j)
                             else:
@@ -266,24 +296,24 @@ class FlowShopScheduler:
                 order_end_times.append(machine_m_times)
             self.end_times.append(order_end_times)
 
-        makespan = maximum(self.end_times[-1][-1])
-
         # The objective is to minimize the last end time
+        makespan = maximum(self.end_times[-1][-1])
         self.model.minimize(makespan)
         self.model.lock()
 
 
-    def _calculate_end_times(self) -> list[list[int]]:
+    def _calculate_end_times(self) -> None:
         """Calculate the end-times for the FSS job results.
 
-        Helper function to calculate the end-times for the FSS job
-        results obtained from the NL Solver. Taken directly from the
-        FSS generator in the NL Solver generators module.
+        Helper function to calculate the end-times for the FSS job results obtained 
+        from the NL Solver. The result objects will be saved as dictionaries of
+        ScheduledJob objects. 
 
         Update when symbol labels are supported.
 
-        Returns:
-            list[list[int]]: end-times from the problem results
+        Modifies:
+            self.job_schedules: A dictionary of jobs and their scheduled times.
+            self.machine_schedules: A dictionary of machines and their scheduled times.
         """
         group_orders = [order.state() for order in self.orders]
 
@@ -296,14 +326,16 @@ class FlowShopScheduler:
                     if order_idx == 0 and group_idx == 0 and machine_idx == 0:
                         start_time = 0
                     elif group_idx == 0:
-                        job_last_machine_end = self.job_schedules[job][-1][-1] + self.job_schedules[job][-1][-2]
+                        job_last_machine_end = self.job_schedules[job][-1].end_time + \
+                            self.job_schedules[job][-1].cooldown_time
                         start_time = job_last_machine_end
                     else:
                         if len(self.job_schedules[job]) == 0:
                             job_last_machine_end = 0
                         else:
-                            job_last_machine_end = self.job_schedules[job][-1][-1] + self.job_schedules[job][-1][-2]
-                        machine_last_job_end = self.machine_schedules[machine][-1][-2]
+                            job_last_machine_end = self.job_schedules[job][-1].end_time + \
+                                self.job_schedules[job][-1].cooldown_time
+                        machine_last_job_end = self.machine_schedules[machine][-1].end_time
                         start_time = np.maximum(job_last_machine_end, machine_last_job_end)
 
                     end_time = start_time + job.processing_times[machine]
@@ -330,13 +362,6 @@ class FlowShopScheduler:
         sampler.sample(self.model, time_limit=time_limit, label="FSS demo")
 
         self._calculate_end_times()
-        return
-        self.solution = {}
-        for machine_idx, machine_times in enumerate(self.end_times):
-            for job_idx, end_time in zip(self.job_order, machine_times):
-
-                duration = self.processing_times[machine_idx][job_idx]
-                self.solution[(job_idx, machine_idx)] = end_time - duration, duration
 
 
     def __repr__(self):
@@ -359,9 +384,11 @@ def create_fss_from_processing_times(processing_times: np.ndarray,
             times for each machine.
     """
     machines = [Machine(i) for i in range(processing_times.shape[0])]
-    jobs = [Job(i, {machines[j]: processing_times[j, i] for j in range(processing_times.shape[0])}) for i in range(processing_times.shape[1])]
+    jobs = [Job(i, {machines[j]: processing_times[j, i] for j in range(processing_times.shape[0])}) \
+             for i in range(processing_times.shape[1])]
     cooldown_periods = [CooldownPeriod(machines[i], {jobs[j]: cooldown_times[i][j] \
-                                                     for j in range(cooldown_times[i].shape[0])}) for i in cooldown_times.keys()]
+                                                     for j in range(cooldown_times[i].shape[0])}) \
+                                                     for i in cooldown_times.keys()]
     fss = FlowShopScheduler(machines, jobs, cooldown_periods)
     return fss
 
@@ -402,9 +429,11 @@ def create_random_fss(num_machines: int,
                          number of machines""")
 
     np.random.seed(seed)
-    processing_times = np.random.randint(min_processing_time, max_processing_time, size=(num_machines, num_jobs))
+    processing_times = np.random.randint(min_processing_time, max_processing_time, 
+                                         size=(num_machines, num_jobs))
     cooldown_periods = np.random.choice(num_machines, size=num_cooldown_periods, replace=False)
-    cooldown_times = {i: np.random.randint(min_cooldown_time, max_cooldown_time, size=num_jobs) for i in cooldown_periods}
+    cooldown_times = {i: np.random.randint(min_cooldown_time, max_cooldown_time, size=num_jobs) \
+                      for i in cooldown_periods}
 
     fss = create_fss_from_processing_times(processing_times, cooldown_times)
     return fss
@@ -425,36 +454,11 @@ if __name__ == '__main__':
     job_data = JobShopData()
     job_data.load_from_file(input_file)
 
-    # model = JobShopSchedulingModel(
-    #     model_data=job_data, max_makespan=1000, greedy_multiplier=1
-    # )
     processing_times = job_data.processing_times
     fss = create_fss_from_processing_times(processing_times=job_data.processing_times,
                                            cooldown_times={
                                                2: np.random.randint(1, 10, size=processing_times.shape[1]),
                                                0: np.random.randint(1, 10, size=processing_times.shape[1])
                                            })
-    fss.build_model()
-    fss.solve(sampler_kwargs={'profile': 'defaults'})
-    import pdb
-    pdb.set_trace()
-    # machines = [Machine(0), Machine(1)]
-    # jobs = [Job(0, {machines[0]: 1, machines[1]:5}), Job(1, {machines[0]: 4, machines[1]:5}), Job(2, {machines[0]: 1, machines[1]:4})]
-    # cooldown_periods = [CooldownPeriod(machines[0], {jobs[0]: 5, jobs[1]: 30, jobs[2]: 30})]
-    create_fss_from_processing_times(np.array([[1, 4, 1], [5, 5, 4]]), {0: np.array([5, 30, 30])})
-
-
-
-    machines = [Machine(0), Machine(1), Machine(2), Machine(3)]
-    jobs = [Job(0, {machines[0]: 1, machines[1]:5, machines[2]: 5, machines[3]: 5}),
-            Job(1, {machines[0]: 4, machines[1]:5, machines[2]: 5, machines[3]: 5}),
-            Job(2, {machines[0]: 1, machines[1]:4, machines[2]: 5, machines[3]: 5})
-            ]
-    cooldown_periods = [CooldownPeriod(machines[1], {jobs[0]: 5, jobs[1]: 30, jobs[2]: 30}),
-                        CooldownPeriod(machines[2], {jobs[0]: 5, jobs[1]: 5, jobs[2]: 5}),
-                        ]
-
-    fss = FlowShopScheduler(machines, jobs, cooldown_periods)
-    # fss = FlowShopScheduler(processing_times=[[1,4,1], [5, 5, 4]], cooldown_times=[5,30,30])
     fss.build_model()
     fss.solve(sampler_kwargs={'profile': 'defaults'})
