@@ -11,7 +11,8 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-
+import sys
+sys.path.append("./src")
 import typing
 
 import numpy as np
@@ -20,6 +21,8 @@ import numpy.typing
 from dwave.optimization.mathematical import maximum
 from dwave.optimization.model import Model
 from dwave.system import LeapHybridNLSampler
+
+from model_data import JobShopData
 
 
 def _2d_nonnegative_int_array(**kwargs: numpy.typing.ArrayLike) -> typing.Iterator[np.ndarray]:
@@ -237,7 +240,7 @@ class FlowShopScheduler:
             order = self.orders[order_idx]
             order_end_times = []
             for machine_idx in range(len(machines)):
-                machine_m = self.machines.index(machines[0])
+                machine_m = self.machines.index(machines[machine_idx])
                 machine_m_times = []
                 if order_idx == 0:
                     for job_j in range(len(self.jobs)): #we'll iterate through the order of the first grouping
@@ -365,10 +368,10 @@ class FlowShopScheduler:
 
 
     def __repr__(self):
-        return f"FlowShopScheduler(processing_times={self.processing_times})"
+        return f"FlowShopScheduler with {len(self.jobs)} jobs and {len(self.machines)} machines"
 
     def __str__(self):
-        return f"FlowShopScheduler with processing times:\n{self.processing_times}"
+        return f"FlowShopScheduler with {len(self.jobs)} jobs and {len(self.machines)} machines"
     
 
 def create_fss_from_processing_times(processing_times: np.ndarray, 
@@ -437,28 +440,36 @@ def create_random_fss(num_machines: int,
 
     fss = create_fss_from_processing_times(processing_times, cooldown_times)
     return fss
+
+
+def create_fss_from_file(file_path: str,
+                         cooldown_times={}) -> FlowShopScheduler:
+    """Create a FlowShopScheduler object from a file.
+
+    Args:
+        file_path (str): The path to the file containing the FSS data.
+        cooldown_times (dict, optional): A dictionary of cooldown times for each machine. 
+            Defaults to {}.
+
+    Returns:
+        FlowShopScheduler: A FlowShopScheduler object with data from the file.
+    """
+    job_data = JobShopData()
+    job_data.load_from_file(file_path)
+    fss = create_fss_from_processing_times(processing_times=job_data.processing_times,
+                                           cooldown_times=cooldown_times)
+    return fss
                       
 
 if __name__ == '__main__':
-    import sys
-    sys.path.append("./src")
-    from model_data import JobShopData
+
     # from job_shop_scheduler import JobShopSchedulingModel
-    random_fss = create_random_fss(4, 3, 2, 10, 10, seed=0)
-    random_fss.build_model()
-    random_fss.solve(sampler_kwargs={'profile': 'defaults'})
-    import pdb
-    pdb.set_trace()
+    # random_fss = create_random_fss(4, 3, 2, 10, 10, seed=0)
+    # random_fss.build_model()
+    # random_fss.solve(sampler_kwargs={'profile': 'defaults'})
+
 
     input_file = 'input/tai20_5.txt'
-    job_data = JobShopData()
-    job_data.load_from_file(input_file)
-
-    processing_times = job_data.processing_times
-    fss = create_fss_from_processing_times(processing_times=job_data.processing_times,
-                                           cooldown_times={
-                                               2: np.random.randint(1, 10, size=processing_times.shape[1]),
-                                               0: np.random.randint(1, 10, size=processing_times.shape[1])
-                                           })
-    fss.build_model()
-    fss.solve(sampler_kwargs={'profile': 'defaults'})
+    file_fss = create_fss_from_file(input_file)
+    file_fss.build_model()
+    file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=5)
