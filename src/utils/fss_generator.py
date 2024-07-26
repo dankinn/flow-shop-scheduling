@@ -29,6 +29,14 @@ class Job:
     form {machine: processing_time}.
     """
     def __init__(self, id_: int, processing_times: dict[int]):
+        """Initialize a job.
+
+        Args:
+            id_ (int): The job ID, a unique identifier to distinguish
+                between jobs.
+            processing_times (dict[int]): A dictionary of processing times
+
+        """
         self.id_ = id_
         self.processing_times = processing_times
 
@@ -38,7 +46,7 @@ class Job:
     def __str__(self):
         return f"Job {self.id_}"
     
-    def __eq__(self, other):
+    def __eq__(self, other: object):
         if not isinstance(other, Job):
             return False
         return self.id_ == other.id_
@@ -68,7 +76,10 @@ class Machine:
     
 
 class CooldownPeriod:
-    """A cooldown period associated with a specific Machine."""
+    """A cooldown period associated with a specific Machine.
+    The cooldown period occurs after a job is executed on the
+    machine.
+    """
     def __init__(self, machine: Machine, durations: dict[Job, int]):
         """Initialize a cooldown period for a machine.
 
@@ -90,7 +101,19 @@ class CooldownPeriod:
     
 class ScheduledJob:
     """A scheduled job with start and end times."""
-    def __init__(self, job: Job, start_time: int, end_time: int, cooldown_time: int=None):
+    def __init__(self, job: Job,
+                 start_time: int,
+                 end_time: int,
+                 cooldown_time: int=None):
+        """Initialize a scheduled job.
+
+        Args:
+            job (Job): The job to be scheduled.
+            start_time (int): The start time of the job.
+            end_time (int): The end time of the job.
+            cooldown_time (int, optional): The cooldown time after the job is
+                executed. Defaults to None.
+        """
         self.job = job
         self.start_time = start_time
         self.end_time = end_time
@@ -110,7 +133,7 @@ class ScheduledJob:
             return f"Scheduled job: {self.job.id_} ({self.start_time}, {self.end_time}); cooldown: {self.cooldown_time}"
         return f"Scheduled job: {self.job.id_} ({self.start_time}, {self.end_time})"
     
-    def __eq__(self, other):
+    def __eq__(self, other: object):
         if not isinstance(other, ScheduledJob):
             return False
         return self.job == other.job \
@@ -150,17 +173,17 @@ class FlowShopScheduler:
         self.jobs = jobs
         self.cooldown_periods = cooldown_periods
 
-        self.ordering_groups = []
+        self.order_groups = []
         last_idx = 0
         self.cooldown_periods.sort(key=lambda x: self.machines.index(x.machine))
         for cooldown_period in self.cooldown_periods:
             if cooldown_period.machine not in self.machines:
                 raise ValueError("Cooldown period machine not in machines list")
             machine_idx = self.machines.index(cooldown_period.machine)
-            self.ordering_groups.append(machines[last_idx:machine_idx+1])
+            self.order_groups.append(machines[last_idx:machine_idx+1])
             last_idx = machine_idx + 1
 
-        self.ordering_groups.append(machines[last_idx:])
+        self.order_groups.append(machines[last_idx:])
 
 
     def generate_integer_bounds(self):
@@ -170,10 +193,10 @@ class FlowShopScheduler:
             Tuple[np.ndarray, np.ndarray]: A tuple of 2D arrays representing the integer
                 bounds for the flow-shop scheduling problem.
         """
-        ordering_group_bounds = [[None, None] for _ in range(len(self.ordering_groups)-1)]
+        ordering_group_bounds = [[None, None] for _ in range(len(self.order_groups)-1)]
         min_time = 0
         total_time = 0
-        for idx, ordering_group in enumerate(self.ordering_groups[:-1]):
+        for idx, ordering_group in enumerate(self.order_groups[:-1]):
             ordering_group_bounds[idx][0] = min_time
             min_time_nominee = float('inf')
             for job in self.jobs:
@@ -207,22 +230,23 @@ class FlowShopScheduler:
         cooldown_times = self.model.constant(cooldown_times)
 
         num_jobs = len(self.jobs)
-        self.orders = [self.model.list(num_jobs) for _ in range(len(self.ordering_groups))]
+        self.orders = [self.model.list(num_jobs) for _ in range(len(self.order_groups))]
         ordering_group_bounds = self.generate_integer_bounds()
         self.order_group_ends = [self.model.integer(shape=num_jobs, lower_bound=lb, upper_bound=ub) \
                                  for [lb, ub] in ordering_group_bounds]
 
         self.end_times = []
-        for order_idx, machines in enumerate(self.ordering_groups):
+        for order_idx, machines in enumerate(self.order_groups):
             order = self.orders[order_idx]
             order_end_times = []
             for machine_idx in range(len(machines)):
                 machine_m = self.machines.index(machines[machine_idx])
                 machine_m_times = []
-                if order_idx == 0:
-                    for job_j in range(len(self.jobs)): #we'll iterate through the order of the first grouping
+                if order_idx == 0: # the first order is special because we don't need to consider the prior order
+                    for job_j in range(len(self.jobs)): #iterate through the order of the first grouping
                         if machine_idx == 0:
-                            if job_j == 0: #if a job is the first in order, then it'll start at time 0 and end at the processing time
+                            if job_j == 0: #if a job is the first in order, then it'll start at time 0 
+                                # and end after its processing time
                                 machine_m_times.append(times[machine_m, :][order[job_j]])
                             else: # otherwise, the job will start at the prior job's end time
                                 end_job_j = times[machine_m][order[job_j]]
@@ -239,12 +263,12 @@ class FlowShopScheduler:
                                 machine_m_times.append(end_job_j)
                         
                 
-                        if (machine_idx == len(machines) - 1) and (len(self.ordering_groups) > 1): 
+                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) > 1): 
                             #if there are cooldown periods, we'll add the cooldown time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
                                                     machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
                     
-                else:
+                else: #if we're not on the first ordering group, we must consider the prior ordering group's end times
                     for job_j in range(len(self.jobs)): #iterate through this groups ordering
                         if machine_idx == 0:
                             if job_j == 0:
@@ -269,7 +293,7 @@ class FlowShopScheduler:
                                 end_job_j += times[machine_m][order[job_j]]
                                 machine_m_times.append(end_job_j)
 
-                        if (machine_idx == len(machines) - 1) and (len(self.ordering_groups) > order_idx + 1):
+                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) > order_idx + 1):
                             #if this is the last machine in this ordering group, we'll add the cooldown time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
                                                     machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
@@ -302,7 +326,7 @@ class FlowShopScheduler:
         for order_idx, group_order in enumerate(group_orders):
             for group_idx, job_idx in enumerate(group_order):
                 job = self.jobs[int(job_idx)]
-                for machine_idx, machine in enumerate(self.ordering_groups[order_idx]):
+                for machine_idx, machine in enumerate(self.order_groups[order_idx]):
                     if order_idx == 0 and group_idx == 0 and machine_idx == 0:
                         start_time = 0
                     elif group_idx == 0:
@@ -319,8 +343,8 @@ class FlowShopScheduler:
                         start_time = np.maximum(job_last_machine_end, machine_last_job_end)
 
                     end_time = start_time + job.processing_times[machine]
-                    if (machine_idx == len(self.ordering_groups[order_idx]) - 1) and \
-                        (order_idx < len(self.ordering_groups) - 1):
+                    if (machine_idx == len(self.order_groups[order_idx]) - 1) and \
+                        (order_idx < len(self.order_groups) - 1):
                         cooldown_time = self.cooldown_periods[order_idx].durations[job]
                     else:
                         cooldown_time = 0
