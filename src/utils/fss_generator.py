@@ -28,17 +28,21 @@ class Job:
     """Job with a list of processing times for each machine, in the
     form {machine: processing_time}.
     """
-    def __init__(self, id_: int, processing_times: dict[int]):
+    def __init__(self, id_: int, processing_times: dict[int], hard_deadline: int=None):
         """Initialize a job.
 
         Args:
             id_ (int): The job ID, a unique identifier to distinguish
                 between jobs.
             processing_times (dict[int]): A dictionary of processing times
+                for each machine, in the form {machine: processing_time}.
+            hard_deadline (int, optional): A hard deadline for the job. Defaults 
+                to None.
 
         """
         self.id_ = id_
         self.processing_times = processing_times
+        self.hard_deadline = hard_deadline
 
     def __repr__(self):
         return f"Job {self.id_}"
@@ -153,7 +157,8 @@ class FlowShopScheduler:
     def __init__(self,
                  machines: list[Machine],
                  jobs: list[Job], 
-                 cooldown_periods: list[CooldownPeriod]=[]):
+                 cooldown_periods: list[CooldownPeriod]=[],
+                 use_hard_deadline: bool=False):
         """Initialize a flow-shop scheduler.
 
         Args:
@@ -164,6 +169,10 @@ class FlowShopScheduler:
             cooldown_periods (list[CooldownPeriod], optional): A list of
                 cooldown periods associated with specific machines. Defaults to []. The order of
                 this list is inconsequential.
+            use_hard_deadline (bool, optional): A flag to indicate whether to use hard deadlines
+                for the jobs. Defaults to False. If True, then any job that has a 
+                hard_deadline attribute will have a constraint added to ensure that the job
+                is completed before the deadline.
         """
         if len(machines) == 0:
             raise ValueError("At least one machine is required")
@@ -172,6 +181,7 @@ class FlowShopScheduler:
         self.machines = machines
         self.jobs = jobs
         self.cooldown_periods = cooldown_periods
+        self.use_hard_deadline = use_hard_deadline
 
         self.order_groups = []
         last_idx = 0
@@ -193,17 +203,18 @@ class FlowShopScheduler:
             Tuple[np.ndarray, np.ndarray]: A tuple of 2D arrays representing the integer
                 bounds for the flow-shop scheduling problem.
         """
-        ordering_group_bounds = [[None, None] for _ in range(len(self.order_groups)-1)]
+        ordering_group_bounds = [[None, None] for _ in range(len(self.order_groups))]
         min_time = 0
         total_time = 0
-        for idx, ordering_group in enumerate(self.order_groups[:-1]):
+        for idx, ordering_group in enumerate(self.order_groups):
             ordering_group_bounds[idx][0] = min_time
             min_time_nominee = float('inf')
             for job in self.jobs:
                 job_time = 0
                 for machine in ordering_group:
                     job_time += job.processing_times[machine]
-                job_time += self.cooldown_periods[idx].durations[job]
+                if idx < len(self.cooldown_periods):
+                    job_time += self.cooldown_periods[idx].durations[job]
                 total_time += job_time
                 if job_time < min_time_nominee:
                     min_time_nominee = job_time
@@ -263,10 +274,12 @@ class FlowShopScheduler:
                                 machine_m_times.append(end_job_j)
                         
                 
-                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) > 1): 
+                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) >= 1): 
                             #if there are cooldown periods, we'll add the cooldown time
-                            self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
-                                                    machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
+                            end_time = machine_m_times[-1]
+                            if len(self.cooldown_periods) >= order_idx + 1:
+                                end_time += cooldown_times[order_idx][order[job_j]]
+                            self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == end_time)
                     
                 else: #if we're not on the first ordering group, we must consider the prior ordering group's end times
                     for job_j in range(len(self.jobs)): #iterate through this groups ordering
@@ -293,12 +306,17 @@ class FlowShopScheduler:
                                 end_job_j += times[machine_m][order[job_j]]
                                 machine_m_times.append(end_job_j)
 
-                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) > order_idx + 1):
+                        if (machine_idx == len(machines) - 1) and (len(self.order_groups) >= order_idx + 1):
                             #if this is the last machine in this ordering group, we'll add the cooldown time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
                                                     machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
                 order_end_times.append(machine_m_times)
             self.end_times.append(order_end_times)
+
+        if self.use_hard_deadline:
+            for job_idx, job in enumerate(self.jobs):
+                if job.hard_deadline is not None:
+                    self.model.add_constraint(self.order_group_ends[-1][job_idx] <= self.model.constant(job.hard_deadline))
 
         # The objective is to minimize the last end time
         makespan = maximum(self.end_times[-1][-1])
@@ -471,5 +489,11 @@ if __name__ == '__main__':
 
     input_file = 'input/tai20_5.txt'
     file_fss = create_fss_from_file(input_file)
+    # file_fss.use_hard_deadline = True
+    # file_fss.jobs[0].hard_deadline = 400
+    # file_fss.jobs[1].hard_deadline = 500
     file_fss.build_model()
     file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=5)
+
+    import pdb
+    pdb.set_trace()
