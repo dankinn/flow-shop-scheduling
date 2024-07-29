@@ -192,8 +192,8 @@ class FlowShopScheduler:
             machine_idx = self.machines.index(cooldown_period.machine)
             self.order_groups.append(machines[last_idx:machine_idx+1])
             last_idx = machine_idx + 1
-
-        self.order_groups.append(machines[last_idx:])
+        if last_idx < len(machines):
+            self.order_groups.append(machines[last_idx:])
 
 
     def generate_integer_bounds(self):
@@ -308,8 +308,10 @@ class FlowShopScheduler:
 
                         if (machine_idx == len(machines) - 1) and (len(self.order_groups) >= order_idx + 1):
                             #if this is the last machine in this ordering group, we'll add the cooldown time
-                            self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == \
-                                                    machine_m_times[-1] + cooldown_times[order_idx][order[job_j]])
+                            end_time = machine_m_times[-1]
+                            if len(self.cooldown_periods) >= order_idx + 1:
+                                end_time += cooldown_times[order_idx][order[job_j]]
+                            self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == end_time)
                 order_end_times.append(machine_m_times)
             self.end_times.append(order_end_times)
 
@@ -482,18 +484,25 @@ def create_fss_from_file(file_path: str,
 
 if __name__ == '__main__':
 
-    # from job_shop_scheduler import JobShopSchedulingModel
-    # random_fss = create_random_fss(4, 3, 2, 10, 10, seed=0)
+    # random_fss = create_random_fss(num_machines=4, 
+    #                                num_jobs=3,
+    #                                num_cooldown_periods=2,
+    #                                max_processing_time=10,
+    #                                max_cooldown_time=10,
+    #                                seed=0)
+    # random_fss.jobs[0].hard_deadline = 40
+    # random_fss.use_hard_deadline = True
     # random_fss.build_model()
-    # random_fss.solve(sampler_kwargs={'profile': 'defaults'})
+    # random_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=30)
+
 
     input_file = 'input/tai20_5.txt'
-    file_fss = create_fss_from_file(input_file)
-    # file_fss.use_hard_deadline = True
-    # file_fss.jobs[0].hard_deadline = 400
-    # file_fss.jobs[1].hard_deadline = 500
+    # cooldown_times = {2: np.random.randint(1, 10, size=20)}
+    cooldown_times = {}
+    file_fss = create_fss_from_file(input_file, cooldown_times)
+    file_fss.use_hard_deadline = True
+    file_fss.jobs[0].hard_deadline = 400
+    file_fss.jobs[1].hard_deadline = 500
+    file_fss.jobs[2].hard_deadline = 600
     file_fss.build_model()
-    file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=5)
-
-    import pdb
-    pdb.set_trace()
+    file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=120)
