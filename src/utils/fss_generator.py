@@ -61,8 +61,10 @@ class Job:
 
 class Machine:
     """A machine object to execute jobs."""
-    def __init__(self, id_: str):
+    def __init__(self, id_: str, maintenance_interval: int=None, maintenance_time: int=0):
         self.id = id_
+        self.maintenance_interval = maintenance_interval
+        self.maintenance_time = maintenance_time
 
     def __repr__(self):
         return f"Machine: {self.id}"
@@ -102,6 +104,38 @@ class CooldownPeriod:
     def __str__(self):
         return f"Cooldown period: {self.durations}"
     
+
+class ScheduledMaintenance:
+    """A scheduled maintenance period for a machine."""
+    def __init__(self, machine: Machine, start_time: int, end_time: int):
+        """Initialize a scheduled maintenance period.
+
+        Args:
+            machine (Machine): The machine to be maintained.
+            start_time (int): The start time of the maintenance period.
+            end_time (int): The end time of the maintenance period.
+        """
+        self.machine = machine
+        self.start_time = start_time
+        self.end_time = end_time
+        self.duration = end_time - start_time
+
+    def __repr__(self):
+        return f"Scheduled maintenance: {self.machine.id} ({self.start_time}, {self.end_time})"
+
+    def __str__(self):
+        return f"Scheduled maintenance: {self.machine.id} ({self.start_time}, {self.end_time})"
+    
+    def __eq__(self, other: object):
+        if not isinstance(other, ScheduledMaintenance):
+            return False
+        return self.machine == other.machine \
+                and self.start_time == other.start_time \
+                and self.end_time == other.end_time
+    
+    def __hash__(self) -> int:
+        return hash('scheduled_maintenance_' + str(self.machine.id))
+
     
 class ScheduledJob:
     """A scheduled job with start and end times."""
@@ -196,7 +230,7 @@ class FlowShopScheduler:
             self.order_groups.append(machines[last_idx:])
 
 
-    def generate_integer_bounds(self):
+    def generate_integer_bounds(self) -> list[list[int]]:
         """Generate integer bounds for the flow-shop scheduling problem.
 
         Returns:
@@ -252,25 +286,34 @@ class FlowShopScheduler:
             order_end_times = []
             for machine_idx in range(len(machines)):
                 machine_m = self.machines.index(machines[machine_idx])
+                maintenance_interval = machines[machine_idx].maintenance_interval
                 machine_m_times = []
                 if order_idx == 0: # the first order is special because we don't need to consider the prior order
                     for job_j in range(len(self.jobs)): #iterate through the order of the first grouping
+                        if maintenance_interval is not None and (job_j + 1) % maintenance_interval == 0:
+                            maintenance_time = self.model.constant(machines[machine_idx].maintenance_time)
+                        else:
+                            maintenance_time = self.model.constant(0)
                         if machine_idx == 0:
                             if job_j == 0: #if a job is the first in order, then it'll start at time 0 
                                 # and end after its processing time
-                                machine_m_times.append(times[machine_m, :][order[job_j]])
+                                end_time = times[machine_m, :][order[job_j]] + maintenance_time
+                                machine_m_times.append(end_time)
                             else: # otherwise, the job will start at the prior job's end time
                                 end_job_j = times[machine_m][order[job_j]]
                                 end_job_j += machine_m_times[-1]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                         else:
                             if job_j == 0:
                                 end_job_j = order_end_times[machine_m - 1][job_j]
                                 end_job_j += times[machine_m, :][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                             else:
                                 end_job_j = maximum(order_end_times[machine_m - 1][job_j], machine_m_times[-1])
                                 end_job_j += times[machine_m, :][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                         
                 
@@ -279,31 +322,40 @@ class FlowShopScheduler:
                             end_time = machine_m_times[-1]
                             if len(self.cooldown_periods) >= order_idx + 1:
                                 end_time += cooldown_times[order_idx][order[job_j]]
+                            end_time += maintenance_time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == end_time)
                     
                 else: #if we're not on the first ordering group, we must consider the prior ordering group's end times
                     for job_j in range(len(self.jobs)): #iterate through this groups ordering
+                        if maintenance_interval is not None and (job_j + 1) % maintenance_interval == 0:
+                            maintenance_time = self.model.constant(machines[machine_idx].maintenance_time)
+                        else:
+                            maintenance_time = self.model.constant(0)
                         if machine_idx == 0:
                             if job_j == 0:
                                 end_job_j = self.order_group_ends[order_idx-1][order[job_j]]
                                 end_job_j += times[machine_m][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                             else:
                                 end_job_j = maximum(self.order_group_ends[order_idx-1][order[job_j]],
                                                         machine_m_times[-1],
                                                         )
                                 end_job_j += times[machine_m][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                         else:
                             if job_j == 0:
                                 end_job_j = order_end_times[-1][job_j]
                                 end_job_j += times[machine_m][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
                             else:
                                 end_job_j = maximum(self.order_group_ends[order_idx-1][order[job_j]],
                                                         machine_m_times[-1],
                                                         )
                                 end_job_j += times[machine_m][order[job_j]]
+                                end_job_j += maintenance_time
                                 machine_m_times.append(end_job_j)
 
                         if (machine_idx == len(machines) - 1) and (len(self.order_groups) >= order_idx + 1):
@@ -311,6 +363,7 @@ class FlowShopScheduler:
                             end_time = machine_m_times[-1]
                             if len(self.cooldown_periods) >= order_idx + 1:
                                 end_time += cooldown_times[order_idx][order[job_j]]
+                            end_time += maintenance_time
                             self.model.add_constraint(self.order_group_ends[order_idx][order[job_j]] == end_time)
                 order_end_times.append(machine_m_times)
             self.end_times.append(order_end_times)
@@ -319,6 +372,8 @@ class FlowShopScheduler:
             for job_idx, job in enumerate(self.jobs):
                 if job.hard_deadline is not None:
                     self.model.add_constraint(self.order_group_ends[-1][job_idx] <= self.model.constant(job.hard_deadline))
+
+
 
         # The objective is to minimize the last end time
         makespan = maximum(self.end_times[-1][-1])
@@ -347,6 +402,8 @@ class FlowShopScheduler:
             for group_idx, job_idx in enumerate(group_order):
                 job = self.jobs[int(job_idx)]
                 for machine_idx, machine in enumerate(self.order_groups[order_idx]):
+                    maintenance_interval = machine.maintenance_interval 
+
                     if order_idx == 0 and group_idx == 0 and machine_idx == 0:
                         start_time = 0
                     elif group_idx == 0:
@@ -372,7 +429,10 @@ class FlowShopScheduler:
                     scheduled_job = ScheduledJob(job, start_time, end_time, cooldown_time)
                     self.job_schedules[job].append(scheduled_job)
                     self.machine_schedules[machine].append(scheduled_job)
-
+                    if maintenance_interval is not None and (group_idx + 1) % maintenance_interval == 0:
+                        maintenance_time = machine.maintenance_time
+                        maintenance_period = ScheduledMaintenance(machine, end_time, end_time + maintenance_time)
+                        self.machine_schedules[machine].append(maintenance_period)
 
     def solve(self, time_limit: int=None, sampler_kwargs: dict={}) -> None:
         """Solve the flow-shop scheduling problem.
@@ -484,16 +544,21 @@ def create_fss_from_file(file_path: str,
 
 if __name__ == '__main__':
 
-    # random_fss = create_random_fss(num_machines=4, 
-    #                                num_jobs=3,
-    #                                num_cooldown_periods=2,
-    #                                max_processing_time=10,
-    #                                max_cooldown_time=10,
-    #                                seed=0)
-    # random_fss.jobs[0].hard_deadline = 40
-    # random_fss.use_hard_deadline = True
-    # random_fss.build_model()
-    # random_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=30)
+    random_fss = create_random_fss(num_machines=4, 
+                                   num_jobs=3,
+                                   num_cooldown_periods=2,
+                                   max_processing_time=10,
+                                   max_cooldown_time=10,
+                                   seed=0)
+    random_fss.jobs[0].hard_deadline = 40
+    random_fss.use_hard_deadline = True
+    random_fss.machines[0].maintenance_interval = 2
+    random_fss.machines[0].maintenance_time = 5
+    random_fss.machines[1].maintenance_interval = 3
+    random_fss.machines[1].maintenance_time = 3
+
+    random_fss.build_model()
+    random_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=10)
 
 
     input_file = 'input/tai20_5.txt'
@@ -501,8 +566,9 @@ if __name__ == '__main__':
     cooldown_times = {}
     file_fss = create_fss_from_file(input_file, cooldown_times)
     file_fss.use_hard_deadline = True
-    file_fss.jobs[0].hard_deadline = 400
+    file_fss.jobs[0].hard_deadline = 400 
     file_fss.jobs[1].hard_deadline = 500
     file_fss.jobs[2].hard_deadline = 600
+    file_fss.machines[0].maintenance_interval = 2
     file_fss.build_model()
-    file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=120)
+    file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=30)
