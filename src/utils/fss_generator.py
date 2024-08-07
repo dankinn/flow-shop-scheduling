@@ -504,5 +504,8 @@ if __name__ == '__main__':
     file_fss.jobs[0].hard_deadline = 400
     file_fss.jobs[1].hard_deadline = 500
     file_fss.jobs[2].hard_deadline = 600
+    file_fss.jobs[13].hard_deadline = 400
+    file_fss.jobs[14].hard_deadline = 500
+    file_fss.jobs[15].hard_deadline = 600
     file_fss.build_model()
     file_fss.solve(sampler_kwargs={'profile': 'defaults'}, time_limit=120)
